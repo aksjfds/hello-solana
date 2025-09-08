@@ -2,104 +2,118 @@
 #![allow(deprecated)]
 
 use anchor_lang::prelude::*;
-use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token::{mint_to, MintTo};
-use anchor_spl::token::{Mint, Token, TokenAccount};
-
 declare_id!("HrSp3iGMsXjgJXL5AZiA2UJ1XPaVDqaXgVUTGpZociiS");
 
 #[program]
 pub mod entrypoint {
-
-    use anchor_spl::token::{self, Transfer};
+    use anchor_lang::system_program::{self, Transfer};
 
     use super::*;
 
-    pub fn create_faucet(ctx: Context<CreateFaucetAccount>, amount: u64) -> Result<()> {
-        let cpi_context = CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            MintTo {
-                authority: ctx.accounts.payer.to_account_info(),
-                to: ctx.accounts.faucet.to_account_info(),
-                mint: ctx.accounts.mint.to_account_info(),
-            },
-        );
+    pub fn start_auction(
+        ctx: Context<StartAuction>,
+        start_price: u64,
+        end_price: u64,
+        duration: u64,
+        drop_interval: u64,
+        drop_step: u64,
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+        let start_time = clock.unix_timestamp as u64;
+        let end_time = start_time + duration;
 
-        mint_to(cpi_context, amount)?;
-
-        Ok(())
-    }
-
-    pub fn request_tokens(ctx: Context<RequestTokens>) -> Result<()> {
-        let signer_seeds: &[&[&[u8]]] = &[&[b"faucet", &[ctx.bumps.faucet]]];
-
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.faucet.to_account_info(),
-            to: ctx.accounts.pda.to_account_info(),
-            authority: ctx.accounts.faucet.to_account_info(),
+        *ctx.accounts.auction_info = AuctionInfo {
+            start_price,
+            end_price,
+            start_time,
+            end_time,
+            drop_interval,
+            drop_step,
         };
-        let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_context = CpiContext::new(cpi_program, cpi_accounts).with_signer(signer_seeds);
 
-        token::transfer(cpi_context, 100)?;
+        msg!("auction_info: {:?}", ctx.accounts.auction_info);
+        Ok(())
+    }
 
+    pub fn auction(ctx: Context<AuctionTransfer>, amount: u64) -> Result<()> {
+        // get current price
+        let info = &ctx.accounts.auction_info;
+        let current_time = Clock::get()?.unix_timestamp as u64;
+        let steps = (current_time - info.start_time) / info.drop_interval;
+        let current_price = info.start_price - (steps * info.drop_step);
+        require!(amount > current_price, AuctionError::InsufficientSolError);
+
+        // transfer
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.payer.to_account_info(),
+            to: ctx.accounts.pda.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.system_program.to_account_info();
+        let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
+        system_program::transfer(cpi_context, amount)?;
+
+        // log payer
+        ctx.accounts.pda.payer = *ctx.accounts.payer.key;
+        msg!("pda: {:?}", ctx.accounts.pda.payer);
         Ok(())
     }
 }
 
-#[derive(Accounts)]
-pub struct RequestTokens<'info> {
-    // associated_token_account
-    #[account(
-        init,
-        payer = payer,
-        token::mint = mint,
-        token::authority = payer,
-        seeds=[b"pda", crate::ID_CONST.as_ref()],
-        bump
-    )]
-    pub pda: Account<'info, TokenAccount>,
-
-    // faucet_account
-    #[account(
-        mut,
-        token::mint=mint,
-        token::authority=faucet,
-        seeds=[b"faucet"],
-        bump
-    )]
-    pub faucet: Account<'info, TokenAccount>,
-
-    // payer
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    pub mint: Account<'info, Mint>,
-    pub system_program: Program<'info, System>,
-    pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
+#[account]
+#[derive(InitSpace)]
+pub struct AuctionPayer {
+    payer: Pubkey,
 }
 
 #[derive(Accounts)]
-pub struct CreateFaucetAccount<'info> {
-    // faucet_account
+pub struct AuctionTransfer<'info> {
     #[account(
         init,
         payer=payer,
-        token::mint=mint,
-        token::authority=faucet,
-        seeds=[b"faucet"],
-        bump
-    )]
-    pub faucet: Account<'info, TokenAccount>,
+        space=8 + AuctionPayer::INIT_SPACE,
+        seeds=[b"pda"],
+        bump)]
+    pub pda: Account<'info, AuctionPayer>,
 
-    // mint
-    #[account(mut, mint::authority=payer)]
-    pub mint: Account<'info, Mint>,
-
-    // payer
     #[account(mut)]
     pub payer: Signer<'info>,
 
+    #[account(seeds=[b"auction"], bump)]
+    pub auction_info: Account<'info, AuctionInfo>,
     pub system_program: Program<'info, System>,
-    pub token_program: Program<'info, Token>,
+}
+
+#[account]
+#[derive(InitSpace, Debug)]
+pub struct AuctionInfo {
+    pub start_price: u64,
+    pub end_price: u64,
+
+    pub start_time: u64,
+    pub end_time: u64,
+
+    pub drop_interval: u64,
+    pub drop_step: u64,
+}
+
+#[derive(Accounts)]
+pub struct StartAuction<'info> {
+    #[account(
+        init,
+        payer=payer,
+        space=8 + AuctionInfo::INIT_SPACE,
+        seeds=[b"auction"],
+        bump
+    )]
+    pub auction_info: Account<'info, AuctionInfo>,
+
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[error_code]
+pub enum AuctionError {
+    #[msg("insufficient sol")]
+    InsufficientSolError,
 }

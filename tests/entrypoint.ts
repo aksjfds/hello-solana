@@ -23,6 +23,7 @@ const connection = program.provider.connection;
 // 
 describe("entrypoint", () => {
   const payer = program.provider.wallet.payer;
+  console.log(payer.publicKey.toBase58());
   const mint = Keypair.generate();
 
   // 
@@ -30,24 +31,48 @@ describe("entrypoint", () => {
   // 
   // 
 
-  it("create mint account", async () => {
-    const createAccIx = SystemProgram.createAccount({
-      fromPubkey: payer.publicKey,
-      newAccountPubkey: mint.publicKey,
-      space: MINT_SIZE,
-      lamports: await getMinimumBalanceForRentExemptMint(connection, "processed"),
-      programId: TOKEN_PROGRAM_ID
-    });
+  // it("create mint account", async () => {
+  //   const createAccIx = SystemProgram.createAccount({
+  //     fromPubkey: payer.publicKey,
+  //     newAccountPubkey: mint.publicKey,
+  //     space: MINT_SIZE,
+  //     lamports: await getMinimumBalanceForRentExemptMint(connection, "processed"),
+  //     programId: TOKEN_PROGRAM_ID
+  //   });
 
-    const initMintIx = createInitializeMint2Instruction(
-      mint.publicKey, 2, payer.publicKey, null
-    );
+  //   const initMintIx = createInitializeMint2Instruction(
+  //     mint.publicKey, 2, payer.publicKey, null
+  //   );
 
-    const tx = new Transaction().add(createAccIx, initMintIx);
-    const signature = await sendAndConfirmTransaction(
-      connection, tx, [payer, mint]
-    );
-    // printLogs(signature);
+  //   const tx = new Transaction().add(createAccIx, initMintIx);
+  //   const signature = await sendAndConfirmTransaction(
+  //     connection, tx, [payer, mint]
+  //   );
+  //   // printLogs(signature);
+  // })
+
+  // 
+  // 
+  // 
+  // 
+
+  it("start auction", async () => {
+
+    const info = Keypair.generate();
+
+    const auctionInfo = {
+      startPrice: new anchor.BN(LAMPORTS_PER_SOL * 100),
+      endPrice: new anchor.BN(LAMPORTS_PER_SOL * 50),
+      duration: new anchor.BN(2 * 60 * 60 * 1000),
+      dropInterval: new anchor.BN(5 * 60 * 1000),
+      dropStep: new anchor.BN(LAMPORTS_PER_SOL * 10)
+    };
+
+    const tx = await program.methods.startAuction(
+      auctionInfo.startPrice, auctionInfo.endPrice, auctionInfo.duration, auctionInfo.dropInterval, auctionInfo.dropStep
+    )
+      .rpc({ commitment: "confirmed" });
+    printLogs(tx);
   })
 
   // 
@@ -55,59 +80,13 @@ describe("entrypoint", () => {
   // 
   // 
 
-  // 创建水龙头token account
-  it("create faucet", async () => {
-    const tx = await program.methods.createFaucet(new anchor.BN(3000))
-      .accounts({
-        mint: mint.publicKey,
-        payer: payer.publicKey,
-      })
-      .signers([payer])
-      .rpc();
-
-    const [faucet, bump] = PublicKey.findProgramAddressSync(
-      [Buffer.from("faucet")], program.programId
-    );
-
-    const tokenAccount = await getAccount(
-      connection, faucet, "processed", TOKEN_PROGRAM_ID
-    );
-    // console.log(tokenAccount.amount);
+  it("auction", async () => {
+    const tx = await program.methods
+      .auction(new anchor.BN(LAMPORTS_PER_SOL * 120))
+      .rpc({ commitment: "confirmed" });
+    
+    printLogs(tx);
   })
-
-  // 
-  // 
-  // 
-  // 
-
-  it("request_tokens", async () => {
-    const bob = Keypair.generate();
-
-    const airdropSig = await connection.requestAirdrop(
-      bob.publicKey, LAMPORTS_PER_SOL * 100
-    );
-    await connection.confirmTransaction({
-      signature: airdropSig,
-      ...(await connection.getLatestBlockhash())
-    });
-
-    const tx = await program.methods.requestTokens()
-      .accounts({
-        payer: bob.publicKey,
-        mint: mint.publicKey,
-      }).signers([bob])
-      .rpc();
-
-    const [pda, bump] = PublicKey.findProgramAddressSync(
-      [Buffer.from("pda"), program.programId.toBuffer()], program.programId
-    );
-
-    const pdaAccount = await getAccount(
-      connection, pda, "processed"
-    );
-    console.log(pdaAccount);
-  })
-
 
 });
 
